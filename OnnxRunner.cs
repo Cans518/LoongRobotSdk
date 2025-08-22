@@ -13,7 +13,6 @@ namespace LoongRobotSdk
 {
     public class ObsClass
     {
-        // 初始化字段以解决CS8618错误
         public float[] cmd = new float[3];
         public float[] z = new float[] { 0.42f };
         public float[] standFlag = new float[] { 0.5f };
@@ -172,18 +171,17 @@ namespace LoongRobotSdk
             Array.Copy(input, 11, input, input.Length - 42, 36);
             Array.Copy(input, 5, input, input.Length - 6, 6);
         }
-
         public float[] Step(JntSdkSensDataClass sens)
         {
             if (sens.key[0] == 6)
             {
                 obs.standFlag[0] = 0;
-                // Console.WriteLine("开始踏步");
+                Console.WriteLine("开始踏步");
             }
             else if (sens.key[0] == 7)
             {
                 obs.standFlag[0] = 0.5f;
-                // Console.WriteLine("停止踏步");
+                Console.WriteLine("停止踏步");
             }
             
             float[] cmd = new float[3];
@@ -217,20 +215,82 @@ namespace LoongRobotSdk
             obs.g[2] = gravity.Z;
             
             Array.Copy(action, obs.action, 12);
-            Array.Copy(sens.actJ, sens.actJ.Length - 12, obs.q, 0, 12);
-            Array.Copy(sens.actW, sens.actW.Length - 12, obs.qd, 0, 12);
+            
+            // 确保数组长度足够，避免越界
+            if (sens.actJ.Length < 12 || sens.actW.Length < 12)
+            {
+                Console.WriteLine($"警告: 传感器数据数组长度不足! actJ长度: {sens.actJ.Length}, actW长度: {sens.actW.Length}");
+                // 使用安全的复制方法
+                for (int i = 0; i < 12; i++)
+                {
+                    if (i < sens.actJ.Length && i < (sens.actJ.Length - (sens.actJ.Length >= 12 ? 12 : 0)))
+                        obs.q[i] = sens.actJ[sens.actJ.Length - 12 + i];
+                    else
+                        obs.q[i] = 0;
+                        
+                    if (i < sens.actW.Length && i < (sens.actW.Length - (sens.actW.Length >= 12 ? 12 : 0)))
+                        obs.qd[i] = sens.actW[sens.actW.Length - 12 + i];
+                    else
+                        obs.qd[i] = 0;
+                }
+            }
+            else
+            {
+                Array.Copy(sens.actJ, sens.actJ.Length - 12, obs.q, 0, 12);
+                Array.Copy(sens.actW, sens.actW.Length - 12, obs.qd, 0, 12);
+            }
 
             Obs2Input();
             
-            // 运行推理
-            var inputTensor = new DenseTensor<float>(input, new[] { 1, 4373 });
-            var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(inName, inputTensor) };
-            var outputs = ort.Run(inputs);
-            var outputTensor = outputs.First().AsTensor<float>();
-            
-            for (int i = 0; i < 12; i++)
+            try
             {
-                action[i] = outputTensor[i];
+                // 运行推理
+                var inputTensor = new DenseTensor<float>(input, new[] { 1, input.Length });
+                Console.WriteLine($"输入张量形状: [1, {input.Length}]");
+                
+                var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(inName, inputTensor) };
+                var outputs = ort.Run(inputs);
+                var outputTensor = outputs.First().AsTensor<float>();
+                
+                // 正确打印输出张量形状
+                Console.WriteLine($"输出张量形状: [{string.Join(", ", outputTensor.Dimensions.ToArray())}]");
+                Console.WriteLine($"输出张量元素数量: {outputTensor.Length}");
+                
+                // 确保输出张量有足够的元素
+                if (outputTensor.Length < 12)
+                {
+                    Console.WriteLine("错误: 输出张量元素数量少于12个!");
+                    return new float[12]; // 返回零数组
+                }
+                
+                // 根据张量维度选择正确的访问方式
+                if (outputTensor.Dimensions.Length == 1)
+                {
+                    // 一维张量
+                    for (int i = 0; i < 12 && i < outputTensor.Length; i++)
+                    {
+                        action[i] = outputTensor[i];
+                    }
+                }
+                else if (outputTensor.Dimensions.Length == 2)
+                {
+                    // 二维张量
+                    for (int i = 0; i < 12 && i < outputTensor.Dimensions[1]; i++)
+                    {
+                        action[i] = outputTensor[0, i];
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"警告: 不支持的输出张量维度: {outputTensor.Dimensions.Length}");
+                    return new float[12]; // 返回零数组
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"推理错误: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                return new float[12]; // 发生错误时返回零数组
             }
 
             obsHist.Dequeue();
